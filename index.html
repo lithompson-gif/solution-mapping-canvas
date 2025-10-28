@@ -1,0 +1,733 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Solution Mapping Document</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        // Import Firestore functions and make them globally available for the non-module script
+        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global variables provided by the environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let app, db, auth;
+        window.app = app;
+        window.db = db;
+        window.auth = auth;
+        window.userId = null; // Will be set after successful authentication
+
+        // Expose Firestore utility functions globally
+        window.doc = doc;
+        window.setDoc = setDoc;
+        window.onSnapshot = onSnapshot; 
+
+        // Log level for Firestore
+        setLogLevel('Debug');
+
+        // Main initialization function
+        window.initializeFirebase = async () => {
+            try {
+                if (Object.keys(firebaseConfig).length === 0) {
+                    console.error("Firebase config is missing. Cannot initialize Firestore.");
+                    document.getElementById('status-message').textContent = 'Error: Firebase not configured.';
+                    return;
+                }
+                
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                window.db = db;
+                window.auth = auth;
+
+                // Handle Authentication
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        window.userId = user.uid;
+                        document.getElementById('user-id-display').textContent = `User ID: ${user.uid}`;
+                        window.loadDiagram();
+                        window.setupAutoSave();
+                    } else {
+                        // Attempt to sign in with custom token or anonymously
+                        if (initialAuthToken) {
+                            await signInWithCustomToken(auth, initialAuthToken);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    }
+                });
+
+            } catch (error) {
+                console.error("Error initializing Firebase or signing in:", error);
+                document.getElementById('status-message').textContent = `Authentication Error: ${error.message}`;
+            }
+        };
+
+        // Call initialization on load
+        window.addEventListener('load', window.initializeFirebase);
+    </script>
+    <style>
+        /* Custom styles for canvas and visual elements */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f9fb;
+        }
+        #diagramCanvas {
+            border: 1px solid #e2e8f0;
+            cursor: default;
+            background-color: white;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+            touch-action: none; /* Prevent default touch behavior like scrolling */
+        }
+        .node-color-process { background-color: #3b82f6; } /* Blue */
+        .node-color-data { background-color: #10b981; } /* Emerald */
+        .node-color-decision { background-color: #f59e0b; } /* Amber */
+        .node-color-start { background-color: #6366f1; } /* Violet */
+    </style>
+</head>
+<body class="p-4 md:p-8">
+
+    <div class="max-w-7xl mx-auto">
+        <h1 class="text-3xl font-extrabold text-gray-900 mb-2">Solution Mapping Canvas</h1>
+        <div id="user-id-display" class="text-sm text-gray-500 mb-4">Initializing User...</div>
+        
+        <div class="flex flex-col lg:flex-row gap-6">
+
+            <!-- Control Panel -->
+            <div class="lg:w-1/4 bg-white p-6 rounded-xl shadow-lg h-full">
+                <h2 class="text-xl font-semibold mb-4 text-gray-700">Tools</h2>
+                <p id="status-message" class="text-sm text-yellow-600 mb-4">Initializing storage...</p>
+                <div class="space-y-3">
+                    <button onclick="addNode('Process', 'Process Step', 'node-color-process')" class="w-full py-2 px-4 rounded-lg text-white font-medium transition duration-150 ease-in-out node-color-process hover:bg-blue-700 shadow-md">
+                        + Add Process
+                    </button>
+                    <button onclick="addNode('Data', 'Data Store', 'node-color-data')" class="w-full py-2 px-4 rounded-lg text-white font-medium transition duration-150 ease-in-out node-color-data hover:bg-emerald-700 shadow-md">
+                        + Add Data
+                    </button>
+                    <button onclick="addNode('Decision', 'Decision Point', 'node-color-decision')" class="w-full py-2 px-4 rounded-lg text-white font-medium transition duration-150 ease-in-out node-color-decision hover:bg-amber-700 shadow-md">
+                        + Add Decision
+                    </button>
+                    <button id="connect-button" onclick="toggleConnectMode()" class="w-full py-2 px-4 rounded-lg font-medium transition duration-150 ease-in-out bg-indigo-500 text-white hover:bg-indigo-600 shadow-md">
+                        Connect Nodes
+                    </button>
+                    <!-- NEW: Delete Node Button -->
+                    <button onclick="deleteSelectedNode()" class="w-full py-2 px-4 rounded-lg font-medium transition duration-150 ease-in-out bg-red-700 text-white hover:bg-red-800 shadow-md">
+                        Delete Selected Node
+                    </button>
+                    <!-- END NEW -->
+                    <button onclick="clearCanvasPrompt()" class="w-full py-2 px-4 rounded-lg font-medium transition duration-150 ease-in-out bg-red-500 text-white hover:bg-red-600 shadow-md">
+                        Clear All
+                    </button>
+                </div>
+                <div class="mt-6 border-t pt-4">
+                    <p class="text-xs text-gray-500">
+                        **Interaction Guide:**<br>
+                        1. Click a node to select it.<br>
+                        2. Drag a node to move it.<br>
+                        3. Double-click a node **OR a line** to edit text.<br>
+                        4. Click 'Connect Nodes' and then click two nodes to link them.
+                    </p>
+                </div>
+            </div>
+
+            <!-- Canvas Area -->
+            <div class="lg:w-3/4 flex flex-col">
+                <canvas id="diagramCanvas" width="800" height="600" class="w-full"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- Custom Modal for Text Editing -->
+    <div id="textEditModal" class="fixed inset-0 bg-gray-900 bg-opacity-50 hidden items-center justify-center p-4">
+        <div class="bg-white rounded-lg shadow-2xl p-6 w-full max-w-sm">
+            <h3 class="text-lg font-semibold mb-4" id="modalTitle">Edit Element Text</h3>
+            <textarea id="nodeTextInput" rows="3" class="w-full p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500"></textarea>
+            <div class="mt-4 flex justify-end space-x-3">
+                <button onclick="closeModal()" class="py-2 px-4 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300">Cancel</button>
+                <button onclick="saveElementText()" class="py-2 px-4 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Custom Modal for Confirmation -->
+    <div id="confirmModal" class="fixed inset-0 bg-gray-900 bg-opacity-50 hidden items-center justify-center p-4">
+        <div class="bg-white rounded-lg shadow-2xl p-6 w-full max-w-sm">
+            <h3 class="text-lg font-semibold mb-4" id="confirmTitle">Confirm Action</h3>
+            <p id="confirmMessage" class="mb-4">Are you sure you want to proceed?</p>
+            <div class="mt-4 flex justify-end space-x-3">
+                <button id="confirmCancel" class="py-2 px-4 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300">Cancel</button>
+                <button id="confirmProceed" class="py-2 px-4 bg-red-600 text-white rounded-lg hover:bg-red-700">Proceed</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- Canvas and Diagram State ---
+        const canvas = document.getElementById('diagramCanvas');
+        const ctx = canvas.getContext('2d');
+        const statusMessage = document.getElementById('status-message');
+
+        let nodes = [];
+        let connections = [];
+        let selectedNode = null;
+        let selectedConnection = null; // NEW: For line selection
+        let isDragging = false;
+        let dragOffsetX, dragOffsetY;
+
+        let connectMode = false;
+        let pendingConnectionStartNode = null;
+
+        let editNodeId = null; 
+        let editConnectionId = null; // NEW: ID of the connection being edited
+        
+        // --- Configuration ---
+        const NODE_DEFAULTS = { width: 150, height: 60, padding: 10, radius: 8, fontSize: 14 };
+        let nodeCounter = 0; 
+
+        // --- Firebase/Firestore Setup ---
+        const COLLECTION_NAME = 'solution_maps';
+        const DOCUMENT_ID = 'current_map';
+
+        const getDocumentRef = () => {
+            if (!window.db) {
+                console.error("Firestore not ready.");
+                return null;
+            }
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+            
+            // Multi-User Collaboration: Public/Shared data path
+            return window.doc(window.db, `artifacts/${appId}/public/data/${COLLECTION_NAME}/${DOCUMENT_ID}`);
+        };
+
+        // Automatic save mechanism (debounced)
+        let saveTimeout = null;
+        const DEBOUNCE_DELAY = 1000;
+
+        window.saveDiagram = async () => {
+            if (!window.db || !window.userId) return;
+
+            clearTimeout(saveTimeout);
+            saveTimeout = setTimeout(async () => {
+                const docRef = getDocumentRef();
+                if (!docRef) return;
+
+                const diagramData = {
+                    nodes: nodes,
+                    connections: connections,
+                    updatedAt: new Date().toISOString()
+                };
+
+                try {
+                    await window.setDoc(docRef, diagramData);
+                    statusMessage.textContent = 'Saved!';
+                    setTimeout(() => statusMessage.textContent = 'Storage initialized.', DEBOUNCE_DELAY);
+                } catch (e) {
+                    console.error("Error saving document: ", e);
+                    statusMessage.textContent = 'Save failed.';
+                }
+            }, DEBOUNCE_DELAY);
+        };
+
+        window.loadDiagram = () => {
+            const docRef = getDocumentRef();
+            if (!docRef) return;
+
+            window.onSnapshot(docRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    nodes = data.nodes || [];
+                    connections = data.connections || [];
+                    statusMessage.textContent = 'Loaded successfully.';
+                    draw();
+                } else {
+                    console.log("No existing diagram found. Starting new.");
+                    statusMessage.textContent = 'Starting new diagram.';
+                    // Add a default starting node if none exists
+                    if (nodes.length === 0) {
+                        addNode('Start', 'Solution Start', 'node-color-start', 100, 300); 
+                        saveDiagram();
+                    }
+                    draw();
+                }
+            }, (error) => {
+                console.error("Error listening to document: ", error);
+                statusMessage.textContent = 'Error loading data.';
+            });
+        };
+
+        window.setupAutoSave = () => { /* No-op, managed by events */ }
+
+        // --- Drawing Logic ---
+
+        const drawRoundedRect = (x, y, w, h, radius) => {
+            if (w < 2 * radius) radius = w / 2;
+            if (h < 2 * radius) radius = h / 2;
+            ctx.beginPath();
+            ctx.moveTo(x + radius, y);
+            ctx.arcTo(x + w, y, x + w, y + h, radius);
+            ctx.arcTo(x + w, y + h, x, y + h, radius);
+            ctx.arcTo(x, y + h, x, y, radius);
+            ctx.arcTo(x, y, x + w, y, radius);
+            ctx.closePath();
+        }
+
+        const getNodeColor = (tailwindClass) => {
+            const colorMap = {
+                'node-color-process': '#3b82f6',
+                'node-color-data': '#10b981',
+                'node-color-decision': '#f59e0b',
+                'node-color-start': '#6366f1'
+            };
+            return colorMap[tailwindClass] || '#6b7280';
+        }
+        
+        const drawNode = (node) => {
+            const { x, y, width, height, text, color, id } = node;
+            const bgColor = getNodeColor(color);
+
+            ctx.fillStyle = bgColor;
+            drawRoundedRect(x, y, width, height, NODE_DEFAULTS.radius);
+            ctx.fill();
+
+            // Highlight if selected or pending connection
+            let highlightColor = null;
+            if (selectedNode && selectedNode.id === id) {
+                highlightColor = connectMode ? '#c084fc' : '#dc2626'; 
+            } else if (pendingConnectionStartNode && pendingConnectionStartNode.id === id) {
+                highlightColor = '#c084fc';
+            }
+
+            if (highlightColor) {
+                ctx.strokeStyle = highlightColor;
+                ctx.lineWidth = 3;
+                drawRoundedRect(x, y, width, height, NODE_DEFAULTS.radius);
+                ctx.stroke();
+            }
+
+            // Draw text (centered)
+            ctx.fillStyle = 'white';
+            ctx.font = `${NODE_DEFAULTS.fontSize}px Inter, sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            
+            // Simple Text wrapping
+            const words = text.split(' ');
+            let line = '';
+            let lines = [];
+            const maxWidth = width - NODE_DEFAULTS.padding * 2;
+
+            for(let n = 0; n < words.length; n++) {
+                let testLine = line + words[n] + ' ';
+                if (ctx.measureText(testLine).width > maxWidth && n > 0) {
+                    lines.push(line.trim());
+                    line = words[n] + ' ';
+                } else {
+                    line = testLine;
+                }
+            }
+            lines.push(line.trim());
+
+            const textY = y + height / 2 - (lines.length - 1) * (NODE_DEFAULTS.fontSize + 2) / 2;
+            lines.forEach((l, i) => {
+                ctx.fillText(l, x + width / 2, textY + i * (NODE_DEFAULTS.fontSize + 2));
+            });
+        }
+        
+        const getConnectionPoints = (startNode, endNode) => {
+            // Simplified: Line from center to center
+            const x1 = startNode.x + startNode.width / 2;
+            const y1 = startNode.y + startNode.height / 2;
+            const x2 = endNode.x + endNode.width / 2;
+            const y2 = endNode.y + endNode.height / 2;
+            return { x1, y1, x2, y2 };
+        };
+
+        const drawConnection = (conn) => {
+            const startNode = nodes.find(n => n.id === conn.startNodeId);
+            const endNode = nodes.find(n => n.id === conn.endNodeId);
+
+            if (!startNode || !endNode) return;
+
+            const { x1, y1, x2, y2 } = getConnectionPoints(startNode, endNode);
+            const midX = (x1 + x2) / 2;
+            const midY = (y1 + y2) / 2;
+
+            // Highlight connection if selected
+            ctx.strokeStyle = (selectedConnection && selectedConnection.id === conn.id) ? '#3b82f6' : '#6b7280';
+            ctx.lineWidth = (selectedConnection && selectedConnection.id === conn.id) ? 3 : 2;
+            ctx.beginPath();
+            ctx.moveTo(x1, y1);
+            ctx.lineTo(x2, y2);
+            ctx.stroke();
+
+            // Draw arrow head
+            const angle = Math.atan2(y2 - y1, x2 - x1);
+            const headLength = 10;
+            ctx.fillStyle = ctx.strokeStyle; // Match line color
+            ctx.beginPath();
+            ctx.moveTo(x2, y2);
+            ctx.lineTo(x2 - headLength * Math.cos(angle - Math.PI / 6), y2 - headLength * Math.sin(angle - Math.PI / 6));
+            ctx.lineTo(x2 - headLength * Math.cos(angle + Math.PI / 6), y2 - headLength * Math.sin(angle + Math.PI / 6));
+            ctx.closePath();
+            ctx.fill();
+
+            // Draw Connection Text Label
+            if (conn.text) {
+                // Determine text position (slightly offset from center)
+                const textX = midX;
+                const textY = midY - 5; // Offset 5px above the line
+
+                // Calculate angle for rotation (optional, but professional)
+                const rotationAngle = angle;
+
+                ctx.save();
+                ctx.translate(textX, textY);
+                ctx.rotate(rotationAngle);
+
+                // Draw background box for text clarity
+                ctx.fillStyle = 'white';
+                const textWidth = ctx.measureText(conn.text).width;
+                const textHeight = NODE_DEFAULTS.fontSize + 4;
+                ctx.fillRect(-(textWidth / 2) - 3, -(textHeight / 2), textWidth + 6, textHeight);
+
+                // Draw the text
+                ctx.fillStyle = '#1f2937'; // Dark gray text
+                ctx.font = `12px Inter, sans-serif`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(conn.text, 0, 0);
+
+                ctx.restore();
+            }
+        }
+
+        const draw = () => {
+            const container = canvas.parentElement;
+            const containerWidth = container.clientWidth;
+            canvas.width = containerWidth;
+            canvas.height = (containerWidth / 4) * 3; // 4:3 aspect ratio
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            connections.forEach(drawConnection);
+            nodes.forEach(drawNode);
+        };
+
+        window.addEventListener('resize', draw);
+
+        // --- Helper Functions ---
+        const getMousePos = (event) => {
+            const rect = canvas.getBoundingClientRect();
+            let clientX, clientY;
+
+            if (event.touches) {
+                clientX = event.touches[0].clientX;
+                clientY = event.touches[0].clientY;
+            } else {
+                clientX = event.clientX;
+                clientY = event.clientY;
+            }
+
+            return {
+                x: (clientX - rect.left) * (canvas.width / rect.width),
+                y: (clientY - rect.top) * (canvas.height / rect.height)
+            };
+        }
+
+        const hitTest = (x, y) => {
+            return nodes.find(node => 
+                x >= node.x && x <= node.x + node.width &&
+                y >= node.y && y <= node.y + node.height
+            );
+        }
+
+        // NEW: Hit test for connections (lines)
+        const hitTestConnection = (x, y) => {
+            const hitTolerance = 8; // Max distance from line center to count as a hit
+            return connections.find(conn => {
+                const startNode = nodes.find(n => n.id === conn.startNodeId);
+                const endNode = nodes.find(n => n.id === conn.endNodeId);
+                if (!startNode || !endNode) return false;
+
+                const { x1, y1, x2, y2 } = getConnectionPoints(startNode, endNode);
+
+                // Check if point (x, y) is close to the line segment (x1, y1) to (x2, y2)
+                const lineLengthSq = (x2 - x1)**2 + (y2 - y1)**2;
+                if (lineLengthSq === 0) return false; // Zero length line
+
+                const t = ((x - x1) * (x2 - x1) + (y - y1) * (y2 - y1)) / lineLengthSq;
+
+                let closestX, closestY;
+                if (t < 0) {
+                    closestX = x1;
+                    closestY = y1;
+                } else if (t > 1) {
+                    closestX = x2;
+                    closestY = y2;
+                } else {
+                    closestX = x1 + t * (x2 - x1);
+                    closestY = y1 + t * (y2 - y1);
+                }
+
+                const distanceSq = (x - closestX)**2 + (y - closestY)**2;
+                return distanceSq < hitTolerance**2;
+            });
+        }
+
+        const generateId = () => crypto.randomUUID();
+
+        // --- Diagram Operations ---
+
+        window.addNode = (type, text, colorClass, x = null, y = null) => {
+            if (x === null || y === null) {
+                nodeCounter++;
+                const stagger = (nodeCounter % 8) * 40; 
+                x = 100 + stagger;
+                y = 100 + stagger;
+            }
+
+            const newNode = {
+                id: generateId(),
+                type: type,
+                text: text,
+                x: x,
+                y: y,
+                width: NODE_DEFAULTS.width,
+                height: NODE_DEFAULTS.height,
+                color: colorClass
+            };
+            nodes.push(newNode);
+            draw();
+            window.saveDiagram();
+        };
+
+        window.toggleConnectMode = () => {
+            connectMode = !connectMode;
+            pendingConnectionStartNode = null;
+            selectedNode = null;
+            selectedConnection = null;
+            const btn = document.getElementById('connect-button');
+            if (connectMode) {
+                btn.classList.remove('bg-indigo-500', 'hover:bg-indigo-600');
+                btn.classList.add('bg-purple-600', 'hover:bg-purple-700');
+                btn.textContent = 'Linking... Click 1st Node';
+                statusMessage.textContent = 'Connect Mode: Click two nodes to link them.';
+            } else {
+                btn.classList.remove('bg-purple-600', 'hover:bg-purple-700');
+                btn.classList.add('bg-indigo-500', 'hover:bg-indigo-600');
+                btn.textContent = 'Connect Nodes';
+                statusMessage.textContent = 'Select Mode: Drag or double-click nodes/lines.';
+            }
+            draw();
+        };
+        
+        // NEW: Function to delete the currently selected node
+        window.deleteSelectedNode = () => {
+            if (selectedNode) {
+                showConfirmModal(
+                    'Delete Node',
+                    `Are you sure you want to delete the node "${selectedNode.text}" and all its connections?`,
+                    () => {
+                        // Remove node
+                        nodes = nodes.filter(n => n.id !== selectedNode.id);
+                        
+                        // Remove associated connections
+                        connections = connections.filter(c => 
+                            c.startNodeId !== selectedNode.id && c.endNodeId !== selectedNode.id
+                        );
+
+                        selectedNode = null;
+                        draw();
+                        window.saveDiagram();
+                        statusMessage.textContent = 'Node deleted.';
+                    }
+                );
+            } else {
+                statusMessage.textContent = 'Please select a node to delete it.';
+            }
+        };
+
+        window.clearCanvasPrompt = () => {
+            showConfirmModal(
+                'Clear Diagram',
+                'Are you sure you want to clear the entire diagram? This action cannot be undone.',
+                () => {
+                    nodes = [];
+                    connections = [];
+                    selectedNode = null;
+                    selectedConnection = null;
+                    isDragging = false;
+                    pendingConnectionStartNode = null;
+                    draw();
+                    window.saveDiagram();
+                }
+            );
+        };
+
+        // --- Event Handlers (Mouse/Touch) ---
+
+        canvas.addEventListener('mousedown', (e) => handleInteractionStart(e));
+        canvas.addEventListener('touchstart', (e) => handleInteractionStart(e));
+
+        canvas.addEventListener('mousemove', (e) => handleInteractionMove(e));
+        canvas.addEventListener('touchmove', (e) => handleInteractionMove(e));
+
+        canvas.addEventListener('mouseup', (e) => handleInteractionEnd(e));
+        canvas.addEventListener('touchend', (e) => handleInteractionEnd(e));
+        canvas.addEventListener('touchcancel', (e) => handleInteractionEnd(e)); // for safety
+
+        canvas.addEventListener('dblclick', (e) => {
+            const pos = getMousePos(e);
+            const node = hitTest(pos.x, pos.y);
+            const connection = hitTestConnection(pos.x, pos.y); // NEW: Check for connection hit
+
+            if (node) {
+                editNodeId = node.id;
+                editConnectionId = null;
+                document.getElementById('nodeTextInput').value = node.text;
+                document.getElementById('modalTitle').textContent = 'Edit Node Text';
+                document.getElementById('textEditModal').style.display = 'flex';
+            } else if (connection) { // NEW: Handle connection double-click
+                editConnectionId = connection.id;
+                editNodeId = null;
+                document.getElementById('nodeTextInput').value = connection.text;
+                document.getElementById('modalTitle').textContent = 'Edit Connection Label';
+                document.getElementById('textEditModal').style.display = 'flex';
+            }
+        });
+
+
+        function handleInteractionStart(e) {
+            e.preventDefault();
+            const pos = getMousePos(e);
+            const node = hitTest(pos.x, pos.y);
+            const connection = hitTestConnection(pos.x, pos.y);
+
+            selectedConnection = null; // Clear connection selection by default
+
+            if (node) {
+                selectedConnection = null; // Clear connection selection when a node is clicked
+                if (connectMode) {
+                    // Connect Mode Logic
+                    if (!pendingConnectionStartNode) {
+                        pendingConnectionStartNode = node;
+                        document.getElementById('connect-button').textContent = 'Linking... Click 2nd Node';
+                    } else if (pendingConnectionStartNode.id !== node.id) {
+                        // Create connection. NEW: Add default text property
+                        connections.push({
+                            id: generateId(),
+                            startNodeId: pendingConnectionStartNode.id,
+                            endNodeId: node.id,
+                            text: "Flow" 
+                        });
+                        toggleConnectMode(); 
+                        window.saveDiagram();
+                    }
+                } else {
+                    // Select/Drag Mode Logic
+                    selectedNode = node;
+                    isDragging = true;
+                    dragOffsetX = pos.x - node.x;
+                    dragOffsetY = pos.y - node.y;
+                }
+            } else if (connection) {
+                 // Selection logic for connection
+                selectedNode = null;
+                selectedConnection = connection;
+            } 
+            else {
+                // Clicked outside any element, deselect everything
+                selectedNode = null;
+                selectedConnection = null;
+                if (connectMode) {
+                    toggleConnectMode(); 
+                }
+            }
+            draw();
+        }
+
+        function handleInteractionMove(e) {
+            e.preventDefault();
+            if (isDragging && selectedNode) {
+                const pos = getMousePos(e);
+                selectedNode.x = pos.x - dragOffsetX;
+                selectedNode.y = pos.y - dragOffsetY;
+                draw();
+            }
+        }
+
+        function handleInteractionEnd(e) {
+            e.preventDefault();
+            if (isDragging) {
+                isDragging = false;
+                window.saveDiagram(); 
+            }
+        }
+
+        // --- Modal Control ---
+
+        window.closeModal = () => {
+            document.getElementById('textEditModal').style.display = 'none';
+            editNodeId = null;
+            editConnectionId = null;
+        }
+
+        // NEW: Consolidated function to save text for either node or connection
+        window.saveElementText = () => {
+            const newText = document.getElementById('nodeTextInput').value;
+            
+            if (editNodeId) {
+                const node = nodes.find(n => n.id === editNodeId);
+                if (node) {
+                    node.text = newText;
+                }
+            } else if (editConnectionId) {
+                const conn = connections.find(c => c.id === editConnectionId);
+                if (conn) {
+                    conn.text = newText;
+                }
+            }
+            
+            draw();
+            window.saveDiagram();
+            closeModal();
+        }
+        
+        let confirmCallback = null;
+        
+        function showConfirmModal(title, message, callback) {
+            confirmCallback = callback;
+            document.getElementById('confirmTitle').textContent = title;
+            document.getElementById('confirmMessage').textContent = message;
+            document.getElementById('confirmModal').style.display = 'flex';
+        }
+
+        document.getElementById('confirmCancel').onclick = () => {
+            document.getElementById('confirmModal').style.display = 'none';
+            confirmCallback = null;
+        };
+
+        document.getElementById('confirmProceed').onclick = () => {
+            document.getElementById('confirmModal').style.display = 'none';
+            if (confirmCallback) {
+                confirmCallback();
+            }
+            confirmCallback = null;
+        };
+
+
+        // Initial draw call
+        window.addEventListener('load', () => {
+            draw();
+        });
+    </script>
+</body>
+</html>
