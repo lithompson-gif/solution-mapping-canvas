@@ -115,14 +115,19 @@
                     <button onclick="addNode('Decision', 'Decision Point', 'node-color-decision')" class="w-full py-2 px-4 rounded-lg text-white font-medium transition duration-150 ease-in-out node-color-decision hover:bg-amber-700 shadow-md">
                         + Add Decision
                     </button>
+                    <!-- NEW: Save Button added here -->
+                    <button onclick="window.saveDiagram()" class="w-full py-2 px-4 rounded-lg font-medium transition duration-150 ease-in-out bg-green-600 text-white hover:bg-green-700 shadow-md">
+                        Save Changes
+                    </button>
+                    <!-- END NEW -->
                     <button id="connect-button" onclick="toggleConnectMode()" class="w-full py-2 px-4 rounded-lg font-medium transition duration-150 ease-in-out bg-indigo-500 text-white hover:bg-indigo-600 shadow-md">
                         Connect Nodes
                     </button>
-                    <!-- NEW: Delete Node Button -->
+                    
                     <button onclick="deleteSelectedNode()" class="w-full py-2 px-4 rounded-lg font-medium transition duration-150 ease-in-out bg-red-700 text-white hover:bg-red-800 shadow-md">
                         Delete Selected Node
                     </button>
-                    <!-- END NEW -->
+                    
                     <button onclick="clearCanvasPrompt()" class="w-full py-2 px-4 rounded-lg font-medium transition duration-150 ease-in-out bg-red-500 text-white hover:bg-red-600 shadow-md">
                         Clear All
                     </button>
@@ -215,7 +220,8 @@
             if (!window.db || !window.userId) return;
 
             clearTimeout(saveTimeout);
-            saveTimeout = setTimeout(async () => {
+            // Re-wrap the save operation in a timeout. When the Save Changes button is clicked, it clears any pending auto-saves and schedules a save 1 second from now.
+            saveTimeout = setTimeout(async () => { 
                 const docRef = getDocumentRef();
                 if (!docRef) return;
 
@@ -226,6 +232,9 @@
                 };
 
                 try {
+                    // Update status immediately before the async operation to show "Saving..."
+                    statusMessage.textContent = 'Saving...'; 
+                    
                     await window.setDoc(docRef, diagramData);
                     statusMessage.textContent = 'Saved!';
                     setTimeout(() => statusMessage.textContent = 'Storage initialized.', DEBOUNCE_DELAY);
@@ -233,7 +242,7 @@
                     console.error("Error saving document: ", e);
                     statusMessage.textContent = 'Save failed.';
                 }
-            }, DEBOUNCE_DELAY);
+            }, 50); // Reduced delay slightly for manual save feel
         };
 
         window.loadDiagram = () => {
@@ -619,7 +628,7 @@
                     // Connect Mode Logic
                     if (!pendingConnectionStartNode) {
                         pendingConnectionStartNode = node;
-                        document.getElementById('connect-button').textContent = 'Linking... Click 2nd Node';
+                        document.getElementById('connect-button').textContent = 'Linking... Click 1st Node';
                     } else if (pendingConnectionStartNode.id !== node.id) {
                         // Create connection. NEW: Add default text property
                         connections.push({
